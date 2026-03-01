@@ -1,0 +1,212 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kyc-copilot
+  labels:
+    app: kyc-copilot
+    environment: production
+
+---
+# API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyc-copilot-api
+  namespace: kyc-copilot
+  labels:
+    app: kyc-copilot-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kyc-copilot-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: kyc-copilot-api
+    spec:
+      containers:
+        - name: api
+          image: <ECR_REGISTRY>/kyc-copilot-api:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-copilot-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-copilot-secrets
+                  key: REDIS_URL
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-copilot-secrets
+                  key: OPENAI_API_KEY
+            - name: S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: kyc-copilot-config
+                  key: S3_BUCKET
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kyc-copilot-api-hpa
+  namespace: kyc-copilot
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kyc-copilot-api
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyc-copilot-api
+  namespace: kyc-copilot
+spec:
+  selector:
+    app: kyc-copilot-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# Ingress (ALB)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kyc-copilot-ingress
+  namespace: kyc-copilot
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/certificate-arn: <YOUR_ACM_CERT_ARN>
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/actions.ssl-redirect: >
+      {"Type":"redirect","RedirectConfig":{"Protocol":"HTTPS","Port":"443","StatusCode":"HTTP_301"}}
+spec:
+  rules:
+    - host: kyc-api.wealthsimple.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kyc-copilot-api
+                port:
+                  number: 80
+
+---
+# Celery Worker Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyc-copilot-worker
+  namespace: kyc-copilot
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kyc-copilot-worker
+  template:
+    metadata:
+      labels:
+        app: kyc-copilot-worker
+    spec:
+      containers:
+        - name: worker
+          image: <ECR_REGISTRY>/kyc-copilot-api:latest
+          command: ["celery", "-A", "src.workers.celery_app", "worker",
+                    "--loglevel=info", "--concurrency=4"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-copilot-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kyc-copilot-secrets
+                  key: REDIS_URL
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "1Gi"
+            limits:
+              cpu: "4000m"
+              memory: "4Gi"
+
+---
+# ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kyc-copilot-config
+  namespace: kyc-copilot
+data:
+  S3_BUCKET: "kyc-copilot-documents-prod"
+  AWS_REGION: "ca-central-1"
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  MAX_FILE_SIZE_MB: "10"
+  BLUR_THRESHOLD: "100"
+  MIN_RESOLUTION_WIDTH: "800"
