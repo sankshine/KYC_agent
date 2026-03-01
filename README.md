@@ -11,10 +11,10 @@ Between December 2024 and May 2025, I experienced **4 KYC rejections** with a We
 
 | Date | Document | Rejection Reason |
 |------|----------|-----------------|
-| Dec 19, 2024 | Photo ID | DOB doesn't match profile |
-| Jan 1, 2025 | Photo ID | Too blurry/unclear |
+| Dec 19, 2024 | W-8BEN | DOB doesn't match profile |
+| Jan 1, 2025 | W-8BEN | Too blurry/unclear |
 | Apr 29, 2025 | W-8BEN | Section 3 address mismatch + Section 9 country missing |
-| May 25, 2025 | Bank Statement | Account number truncated |
+| May 25, 2025 | W-8BEN | Account number truncated |
 
 **Total wasted time:** ~20 business days in waiting + multiple upload attempts.  
 **Root cause:** No pre-validation. No real-time feedback. No cross-validation with the user's profile.  
@@ -30,19 +30,19 @@ Between December 2024 and May 2025, I experienced **4 KYC rejections** with a We
 │                                                                             │
 │  USER SIDE                              COMPLIANCE SIDE                     │
 │  ┌──────────────────────────┐          ┌──────────────────────────────┐    │
-│  │   💡 KYC COPILOT         │          │  🔍 KYC REVIEW AGENT          │    │
-│  │   (Idea 1)               │─────────▶│  (Idea 3)                    │    │
-│  │                          │  Submit  │                              │    │
-│  │  Pre-validates BEFORE     │  only   │  Auto-reviews AFTER           │    │
-│  │  submission              │  valid  │  submission                  │    │
-│  │                          │  docs   │                              │    │
+│  │   💡 KYC COPILOT         │          │  🔍 KYC REVIEW AGENT        │    │
+│  │                          │─────────▶│                             │    │
+│  │                          │  Submit  │                              |    │
+│  │  Pre-validates BEFORE    │  only    │  Auto-reviews AFTER          │    │
+│  │  submission              │  valid   │  submission                  │    │
+│  │                          │  docs    │                              │    │
 │  └──────────────────────────┘          └──────────────────────────────┘    │
-│                                                                             │
-│  SHARED INFRASTRUCTURE                                                      │
+│                                                                            │
+│  SHARED INFRASTRUCTURE                                                     │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │  Claude API (Anthropic) │ AWS S3 │ PostgreSQL │ Redis │ SQS/SNS      │  │
+│  │  Claude API (Anthropic) │ GCS    │ PostgreSQL │ Redis │ Pub/Sub      │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -65,7 +65,7 @@ User (Web/Mobile)
 │  │ Image Quality     │     │    Claude Vision Analyzer     │    │
 │  │ Checker (OpenCV)  │     │                              │    │
 │  │                   │     │  Document Type Handlers:     │    │
-│  │ • Blur detection  │────▶│  • Photo ID Analyzer         │    │
+│  │ • Blur detection  │────▶│  • W-8BEN Analyzer         │    │
 │  │   (Laplacian      │     │  • W-8BEN Analyzer           │    │
 │  │   variance)       │     │  • Financial Doc Analyzer    │    │
 │  │ • Resolution      │     │  • Proof of Address          │    │
@@ -97,7 +97,7 @@ User (Web/Mobile)
 
 ### Validation Pipeline (per document type)
 
-#### Photo ID
+#### W-8BEN
 ```
 Step 1: OpenCV blur check (Laplacian variance > 100)
 Step 2: Resolution check (≥ 800×600 pixels)
@@ -142,7 +142,7 @@ Step 5: Return flags with specific fix suggestions
 | AI/Vision | Claude claude-opus-4-5 Vision API | Best-in-class document understanding |
 | Image Processing | OpenCV (headless) | Fast local blur/resolution checks |
 | Cache | Redis (ElastiCache) | Cache repeat validations by file hash |
-| Storage | AWS S3 (24h auto-delete) | Temp storage, encrypted at rest |
+| Storage | GCS (24h auto-delete) | Temp storage, encrypted at rest |
 | Container | Docker + ECS Fargate | Serverless scaling |
 | CDN | CloudFront | Fast uploads from anywhere |
 | Monitoring | CloudWatch + Datadog | Real-time error alerting |
@@ -205,7 +205,7 @@ An internal AI tool for compliance teams. Every submitted document is automatica
 Document Submission (from user or intake)
            │
            ▼
-    AWS SQS Queue (decoupled intake)
+    Pubsub Queue (decoupled intake)
            │
            ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -293,10 +293,10 @@ Document Submission (from user or intake)
 ├──────┬─────────────┬──────────────┬────────┬────────────┬───────────┤
 │  ID  │ Applicant   │ Document     │ AI Dec │ Confidence │ Flags     │
 ├──────┼─────────────┼──────────────┼────────┼────────────┼───────────┤
-│ 001  │ John Smith  │ Photo ID     │ 🟠 REJ │ 88%        │ 2 errors  │
+│ 001  │ John Smith  │ W-8BEN       │ 🟠 REJ │ 88%        │ 2 errors  │
 │ 002  │ Jane Doe    │ W-8BEN       │ 🟢 APP │ 97%        │ 0         │
-│ 003  │ Bob Lee     │ Bank Stmt    │ 🔴 ESC │ 42%        │ 3 errors  │
-│ 004  │ Sara K      │ Photo ID     │ 🔴 FRD │ 91%        │ 1 fraud   │
+│ 003  │ Bob Lee     │ W-8BEN       │ 🔴 ESC │ 42%        │ 3 errors  │
+│ 004  │ Sara K      │ W-8BEN       │ 🔴 FRD │ 91%        │ 1 fraud   │
 ├──────┴─────────────┴──────────────┴────────┴────────────┴───────────┤
 │                                                                     │
 │  [Click row to expand: flags detail + draft email + approve/reject] │
@@ -308,12 +308,12 @@ Document Submission (from user or intake)
 | Component | Technology | Why |
 |-----------|-----------|-----|
 | AI/Vision | Claude claude-opus-4-5 Vision API | Best document analysis + long context |
-| Queue | AWS SQS | Decoupled async review at scale |
+| Queue | Pubsub | Decoupled async review at scale |
 | Database | PostgreSQL (RDS) | Audit trail, regulatory compliance |
 | Cache/Realtime | ElastiCache Redis + WebSocket | Live dashboard updates |
-| Alerts | AWS SNS | Fraud alerts to legal/compliance |
+| Alerts | Pubsub | Fraud alerts to legal/compliance |
 | Dashboard | React + shadcn/ui | Internal compliance agent UI |
-| Storage | AWS S3 (90-day retention) | Document archive per regulation |
+| Storage | GCS (90-day retention) | Document archive per regulation |
 | Monitoring | CloudWatch + PagerDuty | SLA alerting |
 
 ---
@@ -329,7 +329,7 @@ Document Submission (from user or intake)
                           │  API Gateway                             │
                           │    ├── /validate ──▶ ECS Fargate         │
                           │    │                (KYC Copilot)        │
-                          │    └── /review ───▶ SQS ──▶ ECS Fargate │
+                          │    └── /review ───▶ Pub/Sub ──▶ ECS Fargate │
                           │                            (Review Agent)│
                           │                                          │
                           │  Shared Services:                        │
@@ -441,7 +441,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "kyc_docs" {
 | Claude API | claude-opus-4-5, ~2K tokens/review × 5K | $375.00 |
 | RDS PostgreSQL | db.t3.micro (audit trail) | $14.44 |
 | ElastiCache Redis | cache.t3.micro | $14.62 |
-| SQS | 5K messages | $0.01 |
+| Pub/Sub | 5K messages | $0.01 |
 | SNS | 5K notifications | $0.03 |
 | S3 (90-day doc archive) | ~25GB | $0.58 |
 | CloudWatch | Basic | $5.00 |
@@ -457,7 +457,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "kyc_docs" {
 | Claude API | claude-opus-4-5, ~2K tokens × 50K | $3,750.00 |
 | RDS PostgreSQL | db.t3.medium (Multi-AZ) | $96.00 |
 | ElastiCache Redis | cache.t3.medium cluster | $87.60 |
-| SQS + DLQ | 50K messages | $0.03 |
+| Pub/Sub + DLQ | 50K messages | $0.03 |
 | SNS | Fraud alerts | $0.10 |
 | S3 | ~250GB | $5.75 |
 | CloudWatch + alerting | Production monitoring | $50.00 |
@@ -495,7 +495,7 @@ Both systems are designed with clear human oversight boundaries — critical for
 | Model drift (new ID formats) | Monthly evals against rejection ground truth |
 | Adversarial document fraud | Separate fraud detection layer + human escalation |
 | Regulatory changes (FINTRAC/OSC) | Compliance team reviews rules quarterly, prompts updated |
-| API latency spikes | Async SQS queue buffers load; Redis cache reduces repeat calls |
+| API latency spikes | Async Pub/Sub queue buffers load; Redis cache reduces repeat calls |
 | False positives (rejecting valid docs) | Confidence thresholds tuned; human override always available |
 | Data privacy (PII in documents) | No PII stored beyond 24h; all data encrypted KMS; audit logs |
 
@@ -525,4 +525,3 @@ Both systems are designed with clear human oversight boundaries — critical for
 
 ---
 
-*Prepared by Sana Khan | khan17sana@gmail.com | +1 437-833-9757*
