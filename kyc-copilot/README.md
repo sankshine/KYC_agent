@@ -19,28 +19,36 @@ KYC Copilot is an AI-powered validation system that checks documents **before** 
 ## Architecture
 
 ```
-User Upload
-    │
-    ▼
-┌─────────────────────────────────────────────────────┐
-│                   FastAPI Backend                    │
-│  ┌──────────────┐    ┌──────────────────────────┐   │
-│  │ Image Quality│    │   Claude Vision AI        │   │
-│  │   Checker    │───▶│  Document Analyzer        │   │
-│  │  (OpenCV)    │    │  - Field extraction       │   │
-│  └──────────────┘    │  - Profile cross-check    │   │
-│                      │  - Completeness check     │   │
-│                      └──────────────────────────-┘   │
-│                               │                      │
-│                      ┌────────▼────────┐             │
-│                      │ ValidationResult│             │
-│                      │ + User Checklist│             │
-│                      └─────────────────┘             │
-└─────────────────────────────────────────────────────┘
-    │
-    ▼
-React Frontend (User sees issues BEFORE submitting)
+User Upload (Web / Mobile)
+      │
+      ▼
+Cloud Load Balancer + Cloud Armor (WAF)
+      │
+      ▼
+Cloud Run — KYC Copilot API (auto-scales 1→10 instances)
+      │
+      ├──▶ GCS (temp document storage, auto-delete 24h, CMEK encrypted)
+      │
+      ├──▶ Memorystore Redis (cache validations by file hash, TTL=1h)
+      │
+      └──▶ Anthropic Claude API (Vision + OCR analysis)
+                 │
+                 ▼
+          ValidationResult → User Checklist (issues + suggestions)
 ```
+
+## GCP Services Used
+
+| AWS Equivalent | GCP Service | Purpose |
+|---------------|-------------|---------|
+| ECS Fargate | Cloud Run | Serverless container hosting |
+| S3 | Cloud Storage (GCS) | Temp document storage |
+| ElastiCache | Memorystore (Redis) | Validation result cache |
+| Secrets Manager | Secret Manager | Anthropic API key |
+| ECR | Artifact Registry | Docker image registry |
+| WAF | Cloud Armor | Rate limiting, SQLi protection |
+| CloudWatch | Cloud Monitoring | Alerting and dashboards |
+| CloudFront | Cloud CDN | Fast uploads globally |
 
 ## Quick Start
 
@@ -51,25 +59,25 @@ cd kyc-copilot
 
 # 2. Configure
 cp .env.example .env
-# Add your ANTHROPIC_API_KEY to .env
+# Add: ANTHROPIC_API_KEY, GCP_PROJECT_ID, GCS_BUCKET_NAME
 
-# 3. Run with Docker
+# 3. Run locally (Docker)
 docker-compose up
 
-# OR run locally
-pip install -r requirements.txt
-uvicorn src.api.main:app --reload
+# 4. Deploy to Cloud Run
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+gcloud run deploy kyc-copilot \
+  --source . \
+  --region northamerica-northeast1 \
+  --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest \
+  --set-env-vars GCS_BUCKET_NAME=kyc-copilot-temp-docs \
+  --allow-unauthenticated
 
-# 4. Test it
-curl -X POST "http://localhost:8000/validate" \
-  -F "document_type=photo_id" \
-  -F "file=@your_id.jpg" \
-  -F "full_name=Sana Khan" \
-  -F "date_of_birth=1990-05-15" \
-  -F "address=123 Main St" \
-  -F "city=Toronto" \
-  -F "province=ON" \
-  -F "postal_code=M5V1A1"
+# 5. Provision full infra with Terraform
+cd infrastructure/terraform
+terraform init
+terraform apply -var="project_id=YOUR_PROJECT_ID"
 ```
 
 ## API Reference
@@ -79,36 +87,30 @@ curl -X POST "http://localhost:8000/validate" \
 | `/validate` | POST | Validate document + user profile |
 | `/validation/{id}` | GET | Retrieve past validation |
 | `/analytics/summary` | GET | Aggregate stats |
-| `/document-types` | GET | List supported doc types |
+| `/document-types` | GET | Supported doc types + requirements |
 | `/health` | GET | Health check |
 
 ## Running Tests
 
 ```bash
-pip install pytest pytest-asyncio httpx opencv-python-headless
+pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-## Infrastructure (AWS)
-
-```
-API Gateway → Lambda (or ECS Fargate) → KYC Copilot API
-                                       → S3 (document temp storage)
-                                       → ElastiCache Redis (results cache)
-                                       → CloudWatch (logging/monitoring)
-```
-
-## Cost Estimate (AWS, 10K validations/month)
+## Cost Estimate (GCP, 10K validations/month)
 
 | Service | Monthly Cost |
 |---------|-------------|
-| ECS Fargate (2 vCPU, 4GB) | ~$29 |
-| Claude API (claude-opus-4-5, ~1K tokens/call) | ~$150 |
-| S3 (temp storage, auto-delete 24h) | ~$2 |
-| ElastiCache Redis (cache.t3.micro) | ~$15 |
-| API Gateway | ~$3.50 |
-| CloudWatch | ~$5 |
-| **Total** | **~$205/month** |
+| Cloud Run (auto-scale, ~5% utilization) | ~$8 |
+| Claude API (claude-opus-4-5, ~1.5K tokens/call) | ~$150 |
+| Cloud Storage (temp, 24h TTL) | ~$0.10 |
+| Memorystore Redis (Basic, 1GB) | ~$35 |
+| Cloud Armor | ~$5 |
+| Cloud Monitoring | ~$0 (free tier) |
+| **Total** | **~$198/month** |
+| **Cost per validation** | **~$0.020** |
+
+**Tip:** Use `claude-haiku-4-5` for initial image quality pre-screening — ~40% cost reduction at scale.
 
 ## License
 MIT

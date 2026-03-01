@@ -1,4 +1,6 @@
 version: '3.8'
+
+# Local dev only — in production deploy to Cloud Run via gcloud run deploy
 services:
   kyc-copilot:
     build: .
@@ -6,20 +8,24 @@ services:
       - "8000:8000"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
       - REDIS_URL=redis://redis:6379
-    depends_on:
-      - redis
+      - ENVIRONMENT=development
     volumes:
       - ./src:/app/src
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/sa-key.json
+    env_file:
+      - .env
+    depends_on:
+      - redis
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
 
-  frontend:
-    image: nginx:alpine
-    ports:
-      - "3000:80"
-    volumes:
-      - ./frontend/build:/usr/share/nginx/html
+  # Fake GCS for local dev (optional — use real GCS bucket instead)
+  # fake-gcs:
+  #   image: fsouza/fake-gcs-server
+  #   ports: ["4443:4443"]
