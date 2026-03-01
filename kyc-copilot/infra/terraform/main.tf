@@ -1,234 +1,257 @@
-# ============================================================
-# KYC Copilot - AWS Infrastructure (Terraform)
-# Target: Canada Central (ca-central-1) for PIPEDA compliance
-# ============================================================
+# KYC Copilot — GCP Infrastructure (Terraform)
+# Region: northamerica-northeast1 (Montreal) for Canadian data residency
 
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.6"
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+    google = { source = "hashicorp/google", version = "~> 5.0" }
+  }
+  backend "gcs" {
+    bucket = "kyc-terraform-state"
+    prefix = "kyc-copilot"
+  }
+}
+
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+variable "project_id" { description = "GCP Project ID" }
+variable "region"     { default = "northamerica-northeast1" }
+variable "environment"{ default = "production" }
+
+# ─── APIs ────────────────────────────────────────────────────────────────────
+resource "google_project_service" "apis" {
+  for_each = toset([
+    "run.googleapis.com",
+    "storage.googleapis.com",
+    "redis.googleapis.com",
+    "secretmanager.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "logging.googleapis.com",
+    "monitoring.googleapis.com",
+  ])
+  service            = each.key
+  disable_on_destroy = false
+}
+
+# ─── VPC ─────────────────────────────────────────────────────────────────────
+resource "google_compute_network" "kyc_vpc" {
+  name                    = "kyc-copilot-vpc"
+  auto_create_subnetworks = false
+}
+
+resource "google_compute_subnetwork" "kyc_subnet" {
+  name          = "kyc-copilot-subnet"
+  ip_cidr_range = "10.0.1.0/24"
+  region        = var.region
+  network       = google_compute_network.kyc_vpc.id
+}
+
+# ─── GCS Bucket (replaces AWS S3) ────────────────────────────────────────────
+resource "google_storage_bucket" "kyc_temp_docs" {
+  name          = "kyc-copilot-temp-docs-${var.project_id}"
+  location      = "NORTHAMERICA-NORTHEAST1"
+  force_destroy = false
+
+  # Encrypt with CMEK
+  encryption {
+    default_kms_key_name = google_kms_crypto_key.kyc_key.id
+  }
+
+  # Auto-delete temp documents after 24 hours
+  lifecycle_rule {
+    condition { age = 1; matches_prefix = ["temp/"] }
+    action    { type = "Delete" }
+  }
+
+  uniform_bucket_level_access = true
+
+  # Block all public access
+  public_access_prevention = "enforced"
+}
+
+# ─── KMS for encryption at rest ───────────────────────────────────────────────
+resource "google_kms_key_ring" "kyc" {
+  name     = "kyc-copilot-keyring"
+  location = var.region
+}
+
+resource "google_kms_crypto_key" "kyc_key" {
+  name            = "kyc-copilot-key"
+  key_ring        = google_kms_key_ring.kyc.id
+  rotation_period = "7776000s"  # 90 days
+}
+
+# ─── Memorystore Redis (replaces AWS ElastiCache) ────────────────────────────
+resource "google_redis_instance" "cache" {
+  name           = "kyc-copilot-cache"
+  tier           = "BASIC"
+  memory_size_gb = 1
+  region         = var.region
+  redis_version  = "REDIS_7_0"
+
+  authorized_network = google_compute_network.kyc_vpc.id
+
+  labels = { environment = var.environment, service = "kyc-copilot" }
+}
+
+# ─── Secret Manager (replaces AWS Secrets Manager) ───────────────────────────
+resource "google_secret_manager_secret" "anthropic_key" {
+  secret_id = "anthropic-api-key"
+  replication {
+    user_managed {
+      replicas { location = var.region }
     }
   }
-  
-  backend "s3" {
-    bucket = "kyc-copilot-terraform-state"
-    key    = "prod/terraform.tfstate"
-    region = "ca-central-1"
-    encrypt = true
-  }
 }
 
-provider "aws" {
-  region = var.aws_region
-  
-  default_tags {
-    tags = {
-      Project     = "kyc-copilot"
-      Environment = var.environment
-      ManagedBy   = "terraform"
+# ─── Artifact Registry (replaces AWS ECR) ────────────────────────────────────
+resource "google_artifact_registry_repository" "kyc_copilot" {
+  location      = var.region
+  repository_id = "kyc-copilot"
+  format        = "DOCKER"
+}
+
+# ─── Service Account for Cloud Run ───────────────────────────────────────────
+resource "google_service_account" "kyc_copilot_sa" {
+  account_id   = "kyc-copilot-sa"
+  display_name = "KYC Copilot Service Account"
+}
+
+resource "google_project_iam_member" "sa_gcs" {
+  project = var.project_id
+  role    = "roles/storage.objectAdmin"
+  member  = "serviceAccount:${google_service_account.kyc_copilot_sa.email}"
+}
+
+resource "google_project_iam_member" "sa_secrets" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.kyc_copilot_sa.email}"
+}
+
+# ─── Cloud Run Service (replaces AWS ECS Fargate) ────────────────────────────
+resource "google_cloud_run_v2_service" "kyc_copilot" {
+  name     = "kyc-copilot"
+  location = var.region
+
+  template {
+    service_account = google_service_account.kyc_copilot_sa.email
+
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 10
+    }
+
+    vpc_access {
+      network_interfaces {
+        network    = google_compute_network.kyc_vpc.id
+        subnetwork = google_compute_subnetwork.kyc_subnet.id
+      }
+      egress = "PRIVATE_RANGES_ONLY"
+    }
+
+    containers {
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/kyc-copilot/kyc-copilot:latest"
+
+      resources {
+        limits = { cpu = "2", memory = "4Gi" }
+        cpu_idle = true  # Scale to zero when idle (cost saving)
+      }
+
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
+      }
+      env {
+        name  = "GCS_BUCKET_NAME"
+        value = google_storage_bucket.kyc_temp_docs.name
+      }
+      env {
+        name  = "REDIS_URL"
+        value = "redis://${google_redis_instance.cache.host}:6379"
+      }
+      env {
+        name = "ANTHROPIC_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.anthropic_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      ports { container_port = 8000 }
+
+      startup_probe {
+        http_get { path = "/health" }
+        initial_delay_seconds = 5
+        period_seconds        = 5
+        failure_threshold     = 3
+      }
     }
   }
+
+  depends_on = [google_project_service.apis]
 }
 
-# ── Variables ────────────────────────────────────────────────
-variable "aws_region" {
-  default = "ca-central-1"
-}
+# ─── Cloud Armor (WAF — replaces AWS WAF) ────────────────────────────────────
+resource "google_compute_security_policy" "kyc_waf" {
+  name = "kyc-copilot-waf"
 
-variable "environment" {
-  default = "prod"
-}
-
-variable "cluster_name" {
-  default = "kyc-copilot-eks"
-}
-
-# ── Networking ───────────────────────────────────────────────
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
-  
-  name = "kyc-copilot-vpc"
-  cidr = "10.0.0.0/16"
-  
-  azs             = ["ca-central-1a", "ca-central-1b"]
-  private_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
-  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"]
-  
-  enable_nat_gateway = true
-  single_nat_gateway = false  # HA for prod
-  
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-}
-
-# ── EKS Cluster ──────────────────────────────────────────────
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
-  
-  cluster_name    = var.cluster_name
-  cluster_version = "1.29"
-  
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
-  
-  cluster_endpoint_public_access = true
-  
-  eks_managed_node_groups = {
-    # General workloads
-    general = {
-      min_size     = 2
-      max_size     = 10
-      desired_size = 3
-      
-      instance_types = ["t3.xlarge"]
-      capacity_type  = "ON_DEMAND"
-    }
-    
-    # GPU nodes for vision model inference (optional, for self-hosted models)
-    # gpu = {
-    #   min_size     = 0
-    #   max_size     = 2
-    #   desired_size = 0
-    #   instance_types = ["g4dn.xlarge"]
-    # }
-  }
-}
-
-# ── S3 Buckets ───────────────────────────────────────────────
-resource "aws_s3_bucket" "kyc_documents" {
-  bucket = "kyc-copilot-documents-${var.environment}"
-}
-
-resource "aws_s3_bucket_versioning" "kyc_documents" {
-  bucket = aws_s3_bucket.kyc_documents.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "kyc_documents" {
-  bucket = aws_s3_bucket.kyc_documents.id
   rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+    action   = "deny(403)"
+    priority = 1000
+    match {
+      expr { expression = "evaluatePreconfiguredExpr('sqli-stable')" }
+    }
+    description = "Block SQL injection"
+  }
+
+  rule {
+    action   = "throttle"
+    priority = 2000
+    match { versioned_expr = "SRC_IPS_V1"; config { src_ip_ranges = ["*"] } }
+    rate_limit_options {
+      conform_action = "allow"
+      exceed_action  = "deny(429)"
+      rate_limit_threshold { count = 100; interval_sec = 60 }
+    }
+    description = "Rate limit: 100 req/min per IP"
+  }
+
+  rule {
+    action   = "allow"
+    priority = 2147483647
+    match { versioned_expr = "SRC_IPS_V1"; config { src_ip_ranges = ["*"] } }
+    description = "Default allow"
+  }
+}
+
+# ─── Cloud Monitoring Alert (replaces AWS CloudWatch) ────────────────────────
+resource "google_monitoring_alert_policy" "error_rate" {
+  display_name = "KYC Copilot — High Error Rate"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Error rate > 5%"
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_revision\" AND metric.type=\"run.googleapis.com/request_count\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0.05
+      duration        = "60s"
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_RATE"
+      }
     }
   }
 }
 
-# Auto-delete documents after 24 hours (privacy compliance)
-resource "aws_s3_bucket_lifecycle_configuration" "kyc_documents" {
-  bucket = aws_s3_bucket.kyc_documents.id
-  rule {
-    id     = "auto-delete-validations"
-    status = "Enabled"
-    filter { prefix = "validations/" }
-    expiration { days = 1 }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "kyc_documents" {
-  bucket                  = aws_s3_bucket.kyc_documents.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-# ── RDS PostgreSQL ───────────────────────────────────────────
-resource "aws_db_instance" "kyc_db" {
-  identifier = "kyc-copilot-db"
-  
-  engine         = "postgres"
-  engine_version = "16.1"
-  instance_class = "db.t3.medium"
-  
-  allocated_storage     = 100
-  max_allocated_storage = 500
-  storage_encrypted     = true
-  
-  db_name  = "kyc_copilot"
-  username = "kyc_admin"
-  password = var.db_password  # Provided via secrets manager
-  
-  multi_az               = true  # HA for prod
-  publicly_accessible    = false
-  vpc_security_group_ids = [aws_security_group.db.id]
-  db_subnet_group_name   = aws_db_subnet_group.main.name
-  
-  backup_retention_period = 30
-  deletion_protection     = true
-  
-  enabled_cloudwatch_logs_exports = ["postgresql"]
-}
-
-variable "db_password" {
-  sensitive = true
-}
-
-resource "aws_db_subnet_group" "main" {
-  name       = "kyc-copilot-db-subnet"
-  subnet_ids = module.vpc.private_subnets
-}
-
-resource "aws_security_group" "db" {
-  name   = "kyc-copilot-db-sg"
-  vpc_id = module.vpc.vpc_id
-  
-  ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = module.vpc.private_subnets_cidr_blocks
-  }
-}
-
-# ── ElastiCache Redis ────────────────────────────────────────
-resource "aws_elasticache_replication_group" "redis" {
-  replication_group_id = "kyc-copilot-redis"
-  description          = "KYC Copilot Redis cache and job queue"
-  
-  node_type            = "cache.t3.medium"
-  num_cache_clusters   = 2  # Primary + replica
-  automatic_failover_enabled = true
-  
-  subnet_group_name    = aws_elasticache_subnet_group.redis.name
-  security_group_ids   = [aws_security_group.redis.id]
-  
-  at_rest_encryption_enabled = true
-  transit_encryption_enabled = true
-}
-
-resource "aws_elasticache_subnet_group" "redis" {
-  name       = "kyc-copilot-redis-subnet"
-  subnet_ids = module.vpc.private_subnets
-}
-
-resource "aws_security_group" "redis" {
-  name   = "kyc-copilot-redis-sg"
-  vpc_id = module.vpc.vpc_id
-  
-  ingress {
-    from_port   = 6379
-    to_port     = 6379
-    protocol    = "tcp"
-    cidr_blocks = module.vpc.private_subnets_cidr_blocks
-  }
-}
-
-# ── Outputs ──────────────────────────────────────────────────
-output "eks_cluster_endpoint" {
-  value = module.eks.cluster_endpoint
-}
-
-output "s3_bucket_name" {
-  value = aws_s3_bucket.kyc_documents.bucket
-}
-
-output "rds_endpoint" {
-  value     = aws_db_instance.kyc_db.endpoint
-  sensitive = true
-}
+# ─── Outputs ─────────────────────────────────────────────────────────────────
+output "cloud_run_url"    { value = google_cloud_run_v2_service.kyc_copilot.uri }
+output "gcs_bucket_name"  { value = google_storage_bucket.kyc_temp_docs.name }
+output "redis_host"       { value = google_redis_instance.cache.host }
