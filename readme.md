@@ -46,7 +46,7 @@ Between December 2024 and May 2025, I experienced **4 KYC rejections** with a We
 
 ---
 
-## Idea 1: KYC Copilot (User-Facing Validator)
+## KYC Copilot (User-Facing Validator)
 
 ### What It Does
 Intercepts the document upload flow and validates documents in real-time before they are submitted to compliance review. The user gets a checklist of issues and specific suggestions — turning a multi-week back-and-forth into a 30-second fix.
@@ -192,7 +192,7 @@ Cloud Run (KYC Copilot API)
 
 ---
 
-## Idea 3: KYC Review Agent (Compliance Copilot)
+## KYC Review Agent (Compliance Copilot)
 
 ### What It Does
 An internal AI tool for compliance teams. Every submitted document is automatically pre-reviewed by Claude before a human agent sees it. The agent receives a pre-filled packet: AI decision, confidence score, specific flag evidence, regulatory citations, and a draft rejection email. What took 12 minutes manually now takes 8 seconds.
@@ -207,20 +207,20 @@ Document Submission (from user or intake)
            │
            ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                     KYC Review Agent (Cloud Run)                  │
+│                     KYC Review Agent (Cloud Run)                 │
 │                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
+│  ┌────────────────────────────────────────────────────────── ┐   │
 │  │                   Claude Vision Review                    │   │
-│  │                                                          │   │
-│  │  Multi-criteria scoring:                                 │   │
-│  │  1. Image quality assessment                             │   │
-│  │  2. Data accuracy vs profile (name, DOB, address)        │   │
-│  │  3. Form completeness (per doc type)                     │   │
-│  │  4. Document validity (expiry, institution, date)        │   │
-│  │  5. Fraud indicator detection                            │   │
-│  │                                                          │   │
-│  │  Output: {decision, confidence, flags[], extracted_data} │   │
-│  └─────────────────────────┬────────────────────────────────┘   │
+│  │                                                           │   │
+│  │  Multi-criteria scoring:                                  │   │
+│  │  1. Image quality assessment                              │   │
+│  │  2. Data accuracy vs profile (name, DOB, address)         │   │
+│  │  3. Form completeness (per doc type)                      │   │
+│  │  4. Document validity (expiry, institution, date)         │   │
+│  │  5. Fraud indicator detection                             │   │
+│  │                                                           │   │
+│  │  Output: {decision, confidence, flags[], extracted_data}  │   │
+│  └─────────────────────────┬─────────────────────────────────┘   │
 │                             │                                    │
 │  ┌──────────────────────────▼────────────────────────────────┐  │
 │  │              Business Rule Engine                          │  │
@@ -403,7 +403,7 @@ resource "google_redis_instance" "cache" {
 
 ## Cost Analysis
 
-### Idea 1: KYC Copilot — Monthly GCP Costs
+### KYC Copilot — Monthly GCP Costs
 
 #### Tier 1: Startup (10K validations/month)
 
@@ -437,7 +437,7 @@ resource "google_redis_instance" "cache" {
 
 ---
 
-### Idea 3: KYC Review Agent — Monthly GCP Costs
+### KYC Review Agent — Monthly GCP Costs
 
 #### Tier 1: Small Team (5K reviews/month)
 
@@ -478,13 +478,13 @@ resource "google_redis_instance" "cache" {
 
 Both systems are designed with clear human oversight boundaries — critical for regulated financial services:
 
-### Idea 1 (User-facing)
+### KYC Copilot (User-facing)
 - **AI decides:** Whether issues exist and what they are
 - **Human decides:** Whether to resubmit or proceed
 - **Hard rule:** Never blocks submission — user always has final say
 - **Escalation:** Low-confidence detections show "advisory" warnings, not hard blocks
 
-### Idea 3 (Compliance-facing)
+### KYC Review Agent (Compliance-facing)
 - **AI decides:** Pre-assessment, confidence score, flag evidence
 - **Human decides:** Final approval/rejection (except AUTO_APPROVE < 5% of cases)
 - **Hard rules:**
@@ -529,6 +529,4 @@ Both systems are designed with clear human oversight boundaries — critical for
 
 **MVP focus for application demo:** Weeks 1–6 deliverables only — this is sufficient to demonstrate the full concept with real validation against the actual rejection emails.
 
----
 
-*Prepared by Sana Khan | khan17sana@gmail.com | +1 437-833-9757*
