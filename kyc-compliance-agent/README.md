@@ -56,24 +56,9 @@ Cloud Run — KYC Review Agent (4 vCPU, 8GB, 1–20 instances)
       ├──▶ Anthropic Claude API — Vision review
       │
       └──▶ Pub/Sub: kyc-fraud-alerts ──▶ Push → compliance email webhook
-                                         (replaces AWS SNS)
+                                         
 ```
 
-## GCP Services Used
-
-| AWS Equivalent | GCP Service | Purpose |
-|---------------|-------------|---------|
-| ECS Fargate | Cloud Run | Serverless container hosting |
-| SQS | Cloud Pub/Sub (pull subscription) | Review submission queue |
-| SQS DLQ | Pub/Sub dead-letter topic | Failed review handling |
-| SNS | Cloud Pub/Sub (push subscription) | Fraud alert notifications |
-| RDS PostgreSQL | Cloud SQL (REGIONAL HA) | Audit trail database |
-| ElastiCache | Memorystore (Redis, Standard HA) | Real-time dashboard cache |
-| S3 | Cloud Storage (GCS) | Document archive |
-| Secrets Manager | Secret Manager | API keys + DB passwords |
-| ECR | Artifact Registry | Docker image registry |
-| CloudWatch | Cloud Monitoring + Cloud Logging | Alerts, logging, audit sink |
-| IAM Roles | GCP IAM + Service Accounts | Least-privilege access |
 
 ## Quick Start
 
