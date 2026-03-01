@@ -207,20 +207,20 @@ Document Submission (from user or intake)
            │
            ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                     KYC Review Agent (Cloud Run)                  │
+│                     KYC Review Agent (Cloud Run)                 │
 │                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
+│  ┌────────────────────────────────────────────────────────── ┐   │
 │  │                   Claude Vision Review                    │   │
-│  │                                                          │   │
-│  │  Multi-criteria scoring:                                 │   │
-│  │  1. Image quality assessment                             │   │
-│  │  2. Data accuracy vs profile (name, DOB, address)        │   │
-│  │  3. Form completeness (per doc type)                     │   │
-│  │  4. Document validity (expiry, institution, date)        │   │
-│  │  5. Fraud indicator detection                            │   │
-│  │                                                          │   │
-│  │  Output: {decision, confidence, flags[], extracted_data} │   │
-│  └─────────────────────────┬────────────────────────────────┘   │
+│  │                                                           │   │
+│  │  Multi-criteria scoring:                                  │   │
+│  │  1. Image quality assessment                              │   │
+│  │  2. Data accuracy vs profile (name, DOB, address)         │   │
+│  │  3. Form completeness (per doc type)                      │   │
+│  │  4. Document validity (expiry, institution, date)         │   │
+│  │  5. Fraud indicator detection                             │   │
+│  │                                                           │   │
+│  │  Output: {decision, confidence, flags[], extracted_data}  │   │
+│  └─────────────────────────┬─────────────────────────────────┘   │
 │                             │                                    │
 │  ┌──────────────────────────▼────────────────────────────────┐  │
 │  │              Business Rule Engine                          │  │
